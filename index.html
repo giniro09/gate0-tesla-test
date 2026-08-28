@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gate 0 - Tesla Browser Test</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #0a0a0a;
+  color: #e0e0e0;
+  padding: 24px;
+  min-height: 100vh;
+}
+h1 { font-size: 20px; margin-bottom: 16px; color: #fff; }
+h2 { font-size: 16px; margin: 20px 0 8px; color: #aaa; }
+.card {
+  background: #1a1a1a;
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+.status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+}
+.dot {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: #333;
+  flex-shrink: 0;
+}
+.dot.ok { background: #4caf50; }
+.dot.ng { background: #f44336; }
+.dot.wait { background: #ff9800; }
+button {
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 24px;
+  font-size: 16px;
+  cursor: pointer;
+  margin: 8px 4px;
+}
+button:active { background: #1d4ed8; }
+button:disabled { background: #333; color: #666; }
+#mic-level {
+  width: 100%;
+  height: 20px;
+  background: #222;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 8px 0;
+}
+#mic-level-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #4caf50, #ffeb3b, #f44336);
+  transition: width 0.05s;
+}
+#stt-result {
+  background: #111;
+  border-radius: 8px;
+  padding: 12px;
+  min-height: 48px;
+  margin-top: 8px;
+  font-size: 14px;
+  color: #ccc;
+}
+#log {
+  background: #111;
+  border-radius: 8px;
+  padding: 12px;
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 12px;
+  font-family: monospace;
+  color: #888;
+  margin-top: 8px;
+}
+.log-entry { margin: 2px 0; }
+.log-entry.error { color: #f44336; }
+.log-entry.success { color: #4caf50; }
+#session-timer {
+  font-size: 14px;
+  color: #aaa;
+  margin: 4px 0;
+}
+#tts-test-area { margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<h1>Gate 0: Tesla Browser Verification</h1>
+
+<div class="card">
+  <h2>1. Microphone</h2>
+  <button id="btn-mic" onclick="testMic()">Start Mic Test</button>
+  <div class="status" id="mic-permission-status">
+    <span class="dot" id="mic-dot"></span>
+    <span id="mic-text">Waiting...</span>
+  </div>
+  <div id="mic-level"><div id="mic-level-bar"></div></div>
+</div>
+
+<div class="card">
+  <h2>2. Speech Recognition (STT)</h2>
+  <button id="btn-stt" onclick="testSTT()" disabled>Start STT Test</button>
+  <div class="status">
+    <span class="dot" id="stt-dot"></span>
+    <span id="stt-text">Mic required first</span>
+  </div>
+  <div id="stt-result">Recognition result will appear here...</div>
+</div>
+
+<div class="card">
+  <h2>3. Audio Playback (TTS)</h2>
+  <button id="btn-tts" onclick="testTTS()">Play Test Audio</button>
+  <div class="status">
+    <span class="dot" id="tts-dot"></span>
+    <span id="tts-text">Waiting...</span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>4. Session Persistence</h2>
+  <div id="session-timer">Session: 00:00:00</div>
+  <div class="status">
+    <span class="dot ok" id="session-dot"></span>
+    <span id="session-text">Page alive</span>
+  </div>
+  <p style="font-size:12px;color:#666;margin-top:8px;">
+    Leave this page open. Navigate away to Nav/Media, then come back.
+    The timer shows how long the page has been alive.
+  </p>
+</div>
+
+<div class="card">
+  <h2>5. WebSocket</h2>
+  <button id="btn-ws" onclick="testWS()">Connect WebSocket</button>
+  <div class="status">
+    <span class="dot" id="ws-dot"></span>
+    <span id="ws-text">Waiting...</span>
+  </div>
+  <div id="ws-info" style="font-size:12px;color:#666;margin-top:4px;"></div>
+</div>
+
+<div class="card">
+  <h2>Log</h2>
+  <div id="log"></div>
+</div>
+
+<script>
+// --- Logging ---
+function log(msg, type) {
+  const el = document.getElementById('log');
+  const entry = document.createElement('div');
+  entry.className = 'log-entry' + (type ? ' ' + type : '');
+  const now = new Date().toLocaleTimeString();
+  entry.textContent = '[' + now + '] ' + msg;
+  el.appendChild(entry);
+  el.scrollTop = el.scrollHeight;
+}
+
+// --- Session Timer ---
+const sessionStart = Date.now();
+setInterval(() => {
+  const elapsed = Math.floor((Date.now() - sessionStart) / 1000);
+  const h = String(Math.floor(elapsed / 3600)).padStart(2, '0');
+  const m = String(Math.floor((elapsed % 3600) / 60)).padStart(2, '0');
+  const s = String(elapsed % 60).padStart(2, '0');
+  document.getElementById('session-timer').textContent = 'Session: ' + h + ':' + m + ':' + s;
+}, 1000);
+
+// --- Visibility Change Detection ---
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    log('Page went to background', 'error');
+  } else {
+    log('Page returned to foreground', 'success');
+  }
+});
+
+// --- 1. Microphone Test ---
+let audioContext = null;
+let micStream = null;
+
+async function testMic() {
+  const dot = document.getElementById('mic-dot');
+  const text = document.getElementById('mic-text');
+  const bar = document.getElementById('mic-level-bar');
+  const btnStt = document.getElementById('btn-stt');
+
+  dot.className = 'dot wait';
+  text.textContent = 'Requesting permission...';
+  log('Requesting microphone permission...');
+
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    dot.className = 'dot ok';
+    text.textContent = 'Microphone OK - getUserMedia supported';
+    log('getUserMedia SUCCESS', 'success');
+    btnStt.disabled = false;
+    document.getElementById('stt-text').textContent = 'Ready';
+
+    // Audio level meter
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioContext.createMediaStreamSource(micStream);
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    function updateLevel() {
+      analyser.getByteFrequencyData(dataArray);
+      const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+      const pct = Math.min(100, (avg / 128) * 100);
+      bar.style.width = pct + '%';
+      requestAnimationFrame(updateLevel);
+    }
+    updateLevel();
+    log('Audio level meter running');
+
+  } catch (err) {
+    dot.className = 'dot ng';
+    text.textContent = 'FAILED: ' + err.message;
+    log('getUserMedia FAILED: ' + err.message, 'error');
+  }
+}
+
+// --- 2. STT Test (Web Speech API) ---
+function testSTT() {
+  const dot = document.getElementById('stt-dot');
+  const text = document.getElementById('stt-text');
+  const result = document.getElementById('stt-result');
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    dot.className = 'dot ng';
+    text.textContent = 'Web Speech API not supported';
+    log('SpeechRecognition API not available', 'error');
+    return;
+  }
+
+  const recognition = new SpeechRecognition();
+  recognition.lang = 'ja-JP';
+  recognition.interimResults = true;
+  recognition.continuous = false;
+
+  dot.className = 'dot wait';
+  text.textContent = 'Listening... speak now';
+  result.textContent = '';
+  log('STT started (ja-JP)');
+
+  recognition.onresult = (event) => {
+    let transcript = '';
+    for (let i = 0; i < event.results.length; i++) {
+      transcript += event.results[i][0].transcript;
+    }
+    result.textContent = transcript;
+  };
+
+  recognition.onend = () => {
+    dot.className = 'dot ok';
+    text.textContent = 'Recognition complete';
+    log('STT result: ' + result.textContent, 'success');
+  };
+
+  recognition.onerror = (event) => {
+    dot.className = 'dot ng';
+    text.textContent = 'Error: ' + event.error;
+    log('STT error: ' + event.error, 'error');
+  };
+
+  recognition.start();
+}
+
+// --- 3. TTS Test ---
+function testTTS() {
+  const dot = document.getElementById('tts-dot');
+  const text = document.getElementById('tts-text');
+
+  if (!window.speechSynthesis) {
+    dot.className = 'dot ng';
+    text.textContent = 'SpeechSynthesis not supported';
+    log('TTS not supported', 'error');
+    return;
+  }
+
+  dot.className = 'dot wait';
+  text.textContent = 'Playing...';
+  log('TTS: playing test utterance');
+
+  const utterance = new SpeechSynthesisUtterance('テスト音声です。聞こえていますか？');
+  utterance.lang = 'ja-JP';
+  utterance.onend = () => {
+    dot.className = 'dot ok';
+    text.textContent = 'Playback complete';
+    log('TTS playback complete', 'success');
+  };
+  utterance.onerror = (event) => {
+    dot.className = 'dot ng';
+    text.textContent = 'Error: ' + event.error;
+    log('TTS error: ' + event.error, 'error');
+  };
+  speechSynthesis.speak(utterance);
+}
+
+// --- 5. WebSocket Test ---
+let ws = null;
+let wsStartTime = null;
+let wsPingInterval = null;
+let wsPingCount = 0;
+
+function testWS() {
+  const dot = document.getElementById('ws-dot');
+  const text = document.getElementById('ws-text');
+  const info = document.getElementById('ws-info');
+
+  // Use a public WebSocket echo server for testing
+  const wsUrl = 'wss://echo.websocket.org';
+
+  dot.className = 'dot wait';
+  text.textContent = 'Connecting...';
+  log('WebSocket connecting to echo server...');
+
+  try {
+    ws = new WebSocket(wsUrl);
+  } catch (err) {
+    dot.className = 'dot ng';
+    text.textContent = 'Failed to create WebSocket';
+    log('WebSocket create failed: ' + err.message, 'error');
+    return;
+  }
+
+  ws.onopen = () => {
+    dot.className = 'dot ok';
+    text.textContent = 'Connected';
+    wsStartTime = Date.now();
+    log('WebSocket connected', 'success');
+
+    // Ping every 10 seconds
+    wsPingInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        wsPingCount++;
+        ws.send('ping ' + wsPingCount);
+        const elapsed = Math.floor((Date.now() - wsStartTime) / 1000);
+        info.textContent = 'Ping #' + wsPingCount + ' sent | Connected: ' + elapsed + 's';
+      }
+    }, 10000);
+  };
+
+  ws.onmessage = (event) => {
+    log('WS echo: ' + event.data);
+  };
+
+  ws.onclose = (event) => {
+    dot.className = 'dot ng';
+    const elapsed = Math.floor((Date.now() - wsStartTime) / 1000);
+    text.textContent = 'Disconnected after ' + elapsed + 's (code: ' + event.code + ')';
+    log('WebSocket closed after ' + elapsed + 's, code=' + event.code, 'error');
+    clearInterval(wsPingInterval);
+  };
+
+  ws.onerror = () => {
+    dot.className = 'dot ng';
+    text.textContent = 'Connection error';
+    log('WebSocket error', 'error');
+  };
+}
+
+// --- Browser Info ---
+log('UserAgent: ' + navigator.userAgent);
+log('Page loaded');
+</script>
+
+</body>
+</html>
