@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>PYP Drive</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    font-family: -apple-system, "Hiragino Sans", "Meiryo", sans-serif;
+    background: #0f0f1a;
+    color: #eee;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 24px;
+    background: #16213e;
+    flex-shrink: 0;
+  }
+  .distance-block { display: flex; align-items: baseline; gap: 6px; }
+  .distance {
+    font-size: 64px; font-weight: 900; color: #00d4ff; line-height: 1;
+    transition: color 0.3s;
+    font-variant-numeric: tabular-nums;
+  }
+  .distance.near { color: #e74c3c; }
+  .distance-unit { font-size: 24px; color: #6ac5e0; }
+  .speed { font-size: 18px; color: #888; margin-left: 16px; }
+  .status { text-align: right; }
+  .status-text { font-size: 16px; color: #aaa; }
+  .status-badge {
+    display: inline-block; padding: 4px 12px; border-radius: 10px;
+    font-size: 13px; font-weight: 600; margin-top: 4px;
+  }
+  .badge-wait { background: #555; color: #fff; }
+  .badge-gps { background: #2980b9; color: #fff; }
+  .badge-ok { background: #27ae60; color: #fff; }
+  .badge-lost { background: #e74c3c; color: #fff; }
+
+  .junction-view {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    min-height: 0; position: relative;
+  }
+  .junction-svg { width: 100%; height: 100%; max-width: 600px; max-height: 600px; }
+
+  .notice {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 12px;
+  }
+  .notice-icon { font-size: 48px; opacity: 0.4; }
+  .notice-text { font-size: 24px; color: #555; }
+  .notice-sub { font-size: 14px; color: #444; }
+
+  .footer {
+    padding: 8px 24px; background: #16213e; border-top: 1px solid #333;
+    display: flex; justify-content: space-between;
+    font-size: 12px; color: #555; flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="distance-block">
+    <span id="distance" class="distance">---</span>
+    <span class="distance-unit">m</span>
+    <span id="speed" class="speed"></span>
+  </div>
+  <div class="status">
+    <div id="stateLabel" class="status-text">GPS待機中</div>
+    <span id="badge" class="status-badge badge-wait">待機</span>
+  </div>
+</div>
+
+<div id="junctionArea" class="junction-view" style="display:none;">
+  <svg id="junctionSvg" class="junction-svg" viewBox="-200 -200 400 400"></svg>
+</div>
+
+<div id="noticeArea" class="notice">
+  <div class="notice-icon">📡</div>
+  <div id="noticeText" class="notice-text">GPS信号を待っています</div>
+  <div id="noticeSub" class="notice-sub">ブラウザの位置情報を許可してください</div>
+</div>
+
+<div class="footer">
+  <span id="gpsStatus">GPS: 待機中</span>
+  <span>Map data &copy; OpenStreetMap contributors</span>
+</div>
+
+<script>
+const LABEL_JA = {
+  sharp_left: "鋭角左", left: "左折", slight_left: "左斜め",
+  straight: "直進",
+  slight_right: "右斜め", right: "右折", sharp_right: "鋭角右",
+};
+
+const STATE_JA = {
+  AWAITING_CHOICE: "方向を選んでください",
+  CHOICE_SELECTED: "選択済み",
+  ADVANCING: "次の分岐を探しています",
+  LOST: "位置を確認中",
+};
+
+// ===== 状態管理 =====
+let lastSnap = null;          // 直近のサーバーレスポンス
+let lastGpsTime = 0;          // 直近のGPS取得時刻(ms)
+let lastSpeedMps = 0;         // 直近の速度
+let displayDistanceM = null;  // 補間用の現在距離
+let gpsActive = false;
+
+// ===== GPS =====
+function startGps() {
+  if (!navigator.geolocation) {
+    showNotice("GPS非対応", "このブラウザでは位置情報を取得できません");
+    return;
+  }
+
+  navigator.geolocation.watchPosition(
+    (pos) => {
+      const { latitude, longitude, heading, speed } = pos.coords;
+      gpsActive = true;
+      lastGpsTime = performance.now();
+      lastSpeedMps = speed || 0;
+
+      document.getElementById("gpsStatus").textContent =
+        `GPS: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+      setBadge("gps", "GPS");
+
+      const kph = Math.round(lastSpeedMps * 3.6);
+      document.getElementById("speed").textContent = kph > 0 ? `${kph} km/h` : "";
+
+      sendPosition(latitude, longitude, heading, speed);
+    },
+    (err) => {
+      document.getElementById("gpsStatus").textContent = `GPS: エラー (${err.message})`;
+      setBadge("lost", "GPS不可");
+      showNotice("GPS取得失敗", err.message);
+    },
+    { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
+  );
+}
+
+async function sendPosition(lat, lon, heading, speed) {
+  try {
+    const resp = await fetch("/api/gps", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lat, lon, heading, speed }),
+    });
+    const result = await resp.json();
+
+    // /api/gps は状態更新してbroadcastするが、driveページはWSを使わないので
+    // snapshotを直接取得する
+    const snapResp = await fetch("/api/snapshot");
+    lastSnap = await snapResp.json();
+    renderFromSnap();
+  } catch (e) {
+    console.error("GPS send failed:", e);
+  }
+}
+
+// ===== 補間ループ (60fps) =====
+let lastFrameTime = 0;
+function interpolationLoop(now) {
+  requestAnimationFrame(interpolationLoop);
+
+  if (!lastSnap || !lastSnap.nextDecision || !gpsActive) return;
+
+  const dt = (now - lastFrameTime) / 1000;
+  lastFrameTime = now;
+
+  if (dt > 0 && dt < 0.5 && displayDistanceM !== null && lastSpeedMps > 0.5) {
+    displayDistanceM = Math.max(0, displayDistanceM - lastSpeedMps * dt);
+    updateDistanceDisplay(Math.round(displayDistanceM));
+  }
+}
+requestAnimationFrame(interpolationLoop);
+
+// ===== 描画 =====
+function renderFromSnap() {
+  if (!lastSnap) return;
+  const snap = lastSnap;
+
+  document.getElementById("stateLabel").textContent = STATE_JA[snap.state] || snap.state || "";
+
+  if (snap.nextDecision && snap.nextDecision.branches.length > 0) {
+    displayDistanceM = snap.nextDecision.distanceM;
+    updateDistanceDisplay(snap.nextDecision.distanceM);
+    document.getElementById("junctionArea").style.display = "flex";
+    document.getElementById("noticeArea").style.display = "none";
+    drawJunction(snap.nextDecision);
+    setBadge("ok", "検出中");
+  } else {
+    displayDistanceM = null;
+    document.getElementById("distance").textContent = "---";
+    document.getElementById("distance").classList.remove("near");
+    document.getElementById("junctionArea").style.display = "none";
+    document.getElementById("noticeArea").style.display = "flex";
+    document.getElementById("noticeText").textContent =
+      snap.notice?.message || STATE_JA[snap.state] || "次の分岐を探しています";
+    document.getElementById("noticeSub").textContent = "";
+  }
+}
+
+function updateDistanceDisplay(m) {
+  const el = document.getElementById("distance");
+  el.textContent = m;
+  el.classList.toggle("near", m < 80);
+}
+
+function showNotice(text, sub) {
+  document.getElementById("junctionArea").style.display = "none";
+  document.getElementById("noticeArea").style.display = "flex";
+  document.getElementById("noticeText").textContent = text;
+  document.getElementById("noticeSub").textContent = sub || "";
+}
+
+function setBadge(type, text) {
+  const el = document.getElementById("badge");
+  el.textContent = text;
+  el.className = `status-badge badge-${type}`;
+}
+
+// ===== 交差点SVG描画 =====
+function drawJunction(decision) {
+  const svg = document.getElementById("junctionSvg");
+  const branches = decision.branches;
+
+  let html = `<defs>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>`;
+
+  // 背景リング
+  html += `<circle cx="0" cy="0" r="185" fill="none" stroke="#1a1a2e" stroke-width="2"/>`;
+
+  // 中心（交差点）
+  html += `<circle cx="0" cy="0" r="14" fill="#1e2a45" stroke="#3a5070" stroke-width="2"/>`;
+
+  // 自車の進入路（下から中心）
+  html += `<line x1="0" y1="185" x2="0" y2="14" stroke="#3a3a50" stroke-width="20" stroke-linecap="round"/>`;
+
+  // 距離に応じた自車位置（遠い=下、近い=中心寄り）
+  const maxShowDist = 500;
+  const distRatio = Math.min((displayDistanceM || decision.distanceM) / maxShowDist, 1);
+  const carY = 30 + distRatio * 140; // 30(近い) 〜 170(遠い)
+  html += `<polygon points="0,${carY - 14} -11,${carY + 8} 11,${carY + 8}"
+            fill="#00d4ff" stroke="#0a5e7a" stroke-width="1.5"/>`;
+
+  // 各分岐
+  for (const b of branches) {
+    const rad = b.angleDeg * Math.PI / 180;
+    const roadLen = 165;
+    const ex = Math.sin(rad) * roadLen;
+    const ey = -Math.cos(rad) * roadLen;
+
+    const isSelected = b.selected;
+    const roadColor = isSelected ? "#00d4ff" : "#666";
+    const roadWidth = isSelected ? 24 : 18;
+    const textColor = isSelected ? "#00d4ff" : "#ccc";
+    const glowAttr = isSelected ? ' filter="url(#glow)"' : "";
+
+    // 道路線
+    html += `<line x1="0" y1="0" x2="${ex}" y2="${ey}"
+      stroke="${roadColor}" stroke-width="${roadWidth}" stroke-linecap="round"
+      opacity="${isSelected ? 1 : 0.5}" ${glowAttr}
+      data-branch="${b.id}" class="br" style="cursor:pointer"/>`;
+
+    // 矢印
+    const aDist = roadLen - 8;
+    const tipX = Math.sin(rad) * (aDist + 16);
+    const tipY = -Math.cos(rad) * (aDist + 16);
+    const pRad = rad + Math.PI / 2;
+    const lX = Math.sin(rad) * aDist + Math.sin(pRad) * 9;
+    const lY = -Math.cos(rad) * aDist - Math.cos(pRad) * 9;
+    const rX = Math.sin(rad) * aDist - Math.sin(pRad) * 9;
+    const rY = -Math.cos(rad) * aDist + Math.cos(pRad) * 9;
+    html += `<polygon points="${tipX},${tipY} ${lX},${lY} ${rX},${rY}"
+      fill="${roadColor}" opacity="${isSelected ? 1 : 0.6}"
+      data-branch="${b.id}" class="br" style="cursor:pointer"/>`;
+
+    // ラベル背景 + テキスト
+    const labelDist = 125;
+    const lx = Math.sin(rad) * labelDist;
+    const ly = -Math.cos(rad) * labelDist;
+
+    const anchor = Math.abs(b.angleDeg) < 30 ? "middle" : b.angleDeg > 0 ? "start" : "end";
+    const tx = Math.abs(b.angleDeg) < 30 ? 0 : b.angleDeg > 0 ? 18 : -18;
+
+    const label = LABEL_JA[b.label] || b.label;
+    const road = b.roadName || b.roadRef || "";
+
+    html += `<text x="${lx + tx}" y="${ly - 6}" text-anchor="${anchor}"
+      fill="${textColor}" font-size="20" font-weight="800"
+      data-branch="${b.id}" class="br"
+      style="cursor:pointer; user-select:none; text-shadow: 0 0 8px rgba(0,0,0,0.8)"
+      >${label}</text>`;
+
+    if (road) {
+      html += `<text x="${lx + tx}" y="${ly + 14}" text-anchor="${anchor}"
+        fill="${isSelected ? '#6ac5e0' : '#777'}" font-size="13"
+        data-branch="${b.id}" class="br"
+        style="cursor:pointer; user-select:none; text-shadow: 0 0 6px rgba(0,0,0,0.8)"
+        >${road}</text>`;
+    }
+
+    if (isSelected) {
+      html += `<circle cx="${lx + tx}" cy="${ly + 28}" r="4" fill="#00d4ff" opacity="0.8"/>`;
+      html += `<text x="${lx + tx}" y="${ly + 44}" text-anchor="${anchor}"
+        fill="#00d4ff" font-size="11" font-weight="600"
+        style="user-select:none">選択中</text>`;
+    }
+  }
+
+  svg.innerHTML = html;
+
+  // タップイベント
+  svg.querySelectorAll(".br").forEach(el => {
+    el.addEventListener("click", () => {
+      const bid = el.getAttribute("data-branch");
+      if (bid) chooseBranch(bid);
+    });
+  });
+}
+
+async function chooseBranch(branchId) {
+  try {
+    await fetch("/api/choose", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ branchId }),
+    });
+    // 即座に反映
+    const snapResp = await fetch("/api/snapshot");
+    lastSnap = await snapResp.json();
+    renderFromSnap();
+  } catch (e) { console.error(e); }
+}
+
+// ===== 起動 =====
+startGps();
+</script>
+</body>
+</html>

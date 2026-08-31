@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PYP Drive</title>
+<link rel="stylesheet" href="/leaflet.css" />
+<script src="/leaflet.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Hiragino Sans", "Meiryo", sans-serif;
+    background: #1a1a2e;
+    color: #eee;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* 上部: 地図 */
+  #map {
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* 下部: 操作パネル */
+  .panel {
+    background: #16213e;
+    padding: 12px 16px;
+    border-top: 1px solid #333;
+    flex-shrink: 0;
+  }
+
+  .info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .info-left { display: flex; align-items: baseline; gap: 8px; }
+  .distance { font-size: 36px; font-weight: 800; color: #00d4ff; }
+  .distance-unit { font-size: 16px; color: #888; }
+  .speed-display { font-size: 14px; color: #aaa; }
+  .state-label { font-size: 14px; color: #aaa; }
+  .status-badge {
+    padding: 3px 10px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .status-live { background: #27ae60; color: #fff; }
+  .status-lost { background: #e74c3c; color: #fff; }
+
+  /* 分岐カード */
+  .branches {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+  }
+  .branch-card {
+    flex: 1;
+    max-width: 180px;
+    background: rgba(255,255,255,0.06);
+    border: 2px solid transparent;
+    border-radius: 12px;
+    padding: 14px 10px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.12s ease;
+    user-select: none;
+  }
+  .branch-card:hover { background: rgba(255,255,255,0.1); }
+  .branch-card:active { transform: scale(0.97); }
+  .branch-card.selected {
+    border-color: #00d4ff;
+    background: rgba(0,212,255,0.15);
+    box-shadow: 0 0 16px rgba(0,212,255,0.25);
+  }
+  .branch-card.locked { opacity: 0.4; pointer-events: none; }
+  .arrow { font-size: 48px; line-height: 1; display: block; }
+  .branch-label { font-size: 16px; font-weight: 700; margin-top: 2px; }
+  .road-name { font-size: 12px; color: #999; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .notice-text {
+    text-align: center;
+    font-size: 16px;
+    color: #888;
+    padding: 12px 0;
+  }
+
+  /* シミュレータ操作 */
+  .sim-bar {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #333;
+  }
+  .sim-btn {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid #444;
+    color: #bbb;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .sim-btn:hover { background: rgba(255,255,255,0.15); }
+  .sim-btn.active { border-color: #00d4ff; color: #00d4ff; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="panel">
+  <div class="info-row">
+    <div class="info-left">
+      <span id="distance" class="distance">---</span>
+      <span class="distance-unit">m</span>
+      <span id="speedDisplay" class="speed-display"></span>
+    </div>
+    <div>
+      <span id="stateLabel" class="state-label">起動中</span>
+      <span id="statusBadge" class="status-badge status-lost">接続中</span>
+    </div>
+  </div>
+
+  <div id="branchContainer" class="branches"></div>
+  <div id="notice" class="notice-text"></div>
+
+  <div class="sim-bar">
+    <button class="sim-btn" onclick="setSpeed(0)">停止</button>
+    <button class="sim-btn" onclick="setSpeed(20)">20km/h</button>
+    <button class="sim-btn active" onclick="setSpeed(40)">40km/h</button>
+    <button class="sim-btn" onclick="setSpeed(60)">60km/h</button>
+    <button class="sim-btn" id="pauseBtn" onclick="togglePause()">一時停止</button>
+  </div>
+</div>
+
+<script>
+// --- 地図初期化 ---
+const map = L.map("map", { zoomControl: false }).setView([36.5592, 139.8985], 16);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  maxZoom: 19,
+}).addTo(map);
+
+// 車両マーカー（青い三角）
+const vehicleSvg = `<svg width="32" height="32" viewBox="-16 -16 32 32" xmlns="http://www.w3.org/2000/svg">
+  <polygon points="0,-14 10,10 -10,10" fill="#00d4ff" stroke="#0a5e7a" stroke-width="2" opacity="0.9"/>
+</svg>`;
+const vehicleIcon = L.divIcon({
+  html: vehicleSvg,
+  className: "",
+  iconSize: [32, 32],
+  iconAnchor: [16, 16],
+});
+const vehicleMarker = L.marker([36.5592, 139.8985], { icon: vehicleIcon, zoomAnimation: false }).addTo(map);
+
+// 交差点マーカー（赤い丸）
+const junctionMarker = L.circleMarker([0, 0], {
+  radius: 10, color: "#e74c3c", fillColor: "#e74c3c", fillOpacity: 0.5, weight: 2,
+});
+
+// 走行軌跡
+const trail = L.polyline([], { color: "#00d4ff", weight: 3, opacity: 0.5 }).addTo(map);
+const trailPoints = [];
+const MAX_TRAIL = 200;
+
+// --- 定数 ---
+const ARROW_MAP = {
+  sharp_left: "↰", left: "←", slight_left: "↖",
+  straight: "↑",
+  slight_right: "↗", right: "→", sharp_right: "↱",
+};
+const LABEL_MAP = {
+  sharp_left: "鋭角左", left: "左折", slight_left: "左斜め",
+  straight: "直進",
+  slight_right: "右斜め", right: "右折", sharp_right: "鋭角右",
+};
+
+let ws;
+let paused = false;
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+  ws.onopen = () => {
+    document.getElementById("statusBadge").textContent = "LIVE";
+    document.getElementById("statusBadge").className = "status-badge status-live";
+  };
+
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "session.snapshot") {
+      renderSnapshot(msg.data);
+      if (msg.vehicle) updateVehicle(msg.vehicle);
+      if (msg.data.junctionLat != null) updateJunction(msg.data.junctionLat, msg.data.junctionLon);
+      else junctionMarker.remove();
+    }
+  };
+
+  ws.onclose = () => {
+    document.getElementById("statusBadge").textContent = "切断";
+    document.getElementById("statusBadge").className = "status-badge status-lost";
+    setTimeout(connect, 2000);
+  };
+}
+
+function updateVehicle(v) {
+  const latlng = [v.lat, v.lon];
+  vehicleMarker.setLatLng(latlng);
+
+  // 車両マーカーを進行方向に回転
+  const el = vehicleMarker.getElement();
+  if (el) {
+    const svg = el.querySelector("svg");
+    if (svg) svg.style.transform = `rotate(${v.headingDeg}deg)`;
+  }
+
+  // 地図を追従
+  map.panTo(latlng, { animate: true, duration: 0.5 });
+
+  // 軌跡
+  trailPoints.push(latlng);
+  if (trailPoints.length > MAX_TRAIL) trailPoints.shift();
+  trail.setLatLngs(trailPoints);
+
+  // 速度表示
+  const kph = Math.round(v.speedMps * 3.6);
+  document.getElementById("speedDisplay").textContent = `${kph} km/h`;
+}
+
+function updateJunction(lat, lon) {
+  junctionMarker.setLatLng([lat, lon]);
+  if (!map.hasLayer(junctionMarker)) junctionMarker.addTo(map);
+}
+
+function renderSnapshot(snap) {
+  const distEl = document.getElementById("distance");
+  const stateEl = document.getElementById("stateLabel");
+  const branchEl = document.getElementById("branchContainer");
+  const noticeEl = document.getElementById("notice");
+
+  const stateLabels = {
+    WAITING_TELEMETRY: "位置情報を待っています",
+    MATCHING: "道路を確認中",
+    APPROACHING: "分岐に接近中",
+    AWAITING_CHOICE: "方向を選んでください",
+    CHOICE_SELECTED: "選択済み",
+    CROSSING: "交差点通過中",
+    ADVANCING: "次の分岐を探しています",
+    LOST: "位置を確認中",
+    PAUSED: "一時停止中",
+    ERROR: "エラー",
+  };
+  stateEl.textContent = stateLabels[snap.state] || snap.state;
+
+  if (snap.nextDecision) {
+    distEl.textContent = snap.nextDecision.distanceM;
+
+    branchEl.innerHTML = snap.nextDecision.branches.map(b => `
+      <div class="branch-card ${b.selected ? 'selected' : ''} ${snap.nextDecision.locked ? 'locked' : ''}"
+           onclick="chooseBranch('${b.id}')">
+        <span class="arrow">${ARROW_MAP[b.label] || "?"}</span>
+        <div class="branch-label">${LABEL_MAP[b.label] || b.label}</div>
+        <div class="road-name">${b.roadName || b.roadRef || ""}</div>
+      </div>
+    `).join("");
+    noticeEl.textContent = "";
+  } else {
+    distEl.textContent = "---";
+    branchEl.innerHTML = "";
+    noticeEl.textContent = snap.notice?.message || stateLabels[snap.state] || "";
+  }
+}
+
+async function chooseBranch(branchId) {
+  try {
+    await fetch("/api/choose", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ branchId }),
+    });
+  } catch (e) { console.error(e); }
+}
+
+async function setSpeed(kph) {
+  document.querySelectorAll(".sim-btn").forEach(b => b.classList.remove("active"));
+  event.target.classList.add("active");
+  await fetch("/api/sim/speed", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ speedKph: kph }),
+  });
+}
+
+async function togglePause() {
+  const res = await fetch("/api/sim/pause", { method: "POST" });
+  const data = await res.json();
+  paused = data.paused;
+  document.getElementById("pauseBtn").textContent = paused ? "再開" : "一時停止";
+}
+
+connect();
+</script>
+</body>
+</html>
