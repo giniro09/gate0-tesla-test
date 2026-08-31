@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PYP Drive - PIN</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Hiragino Sans", "Meiryo", sans-serif;
+    background: #0f0f1a;
+    color: #eee;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .card {
+    background: #16213e;
+    border-radius: 16px;
+    padding: 48px 40px;
+    text-align: center;
+    max-width: 360px;
+    width: 90%;
+  }
+  h1 { font-size: 22px; margin-bottom: 8px; }
+  .sub { font-size: 14px; color: #666; margin-bottom: 32px; }
+  .pin-row {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    margin-bottom: 24px;
+  }
+  .pin-digit {
+    width: 56px; height: 64px;
+    background: #0f0f1a;
+    border: 2px solid #333;
+    border-radius: 10px;
+    color: #00d4ff;
+    font-size: 32px;
+    font-weight: 800;
+    text-align: center;
+    outline: none;
+    caret-color: #00d4ff;
+  }
+  .pin-digit:focus { border-color: #00d4ff; }
+  .error {
+    color: #e74c3c;
+    font-size: 14px;
+    min-height: 20px;
+    margin-bottom: 16px;
+  }
+  button {
+    background: #00d4ff;
+    color: #0f0f1a;
+    border: none;
+    border-radius: 10px;
+    padding: 14px 48px;
+    font-size: 18px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  button:hover { background: #33dfff; }
+  button:disabled { background: #333; color: #666; cursor: default; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>PYP Drive</h1>
+  <div class="sub">PINを入力してください</div>
+  <div class="pin-row">
+    <input class="pin-digit" type="tel" maxlength="1" inputmode="numeric" autofocus>
+    <input class="pin-digit" type="tel" maxlength="1" inputmode="numeric">
+    <input class="pin-digit" type="tel" maxlength="1" inputmode="numeric">
+    <input class="pin-digit" type="tel" maxlength="1" inputmode="numeric">
+  </div>
+  <div id="error" class="error"></div>
+  <button id="submit" disabled>入る</button>
+</div>
+<script>
+const digits = document.querySelectorAll(".pin-digit");
+const btn = document.getElementById("submit");
+const err = document.getElementById("error");
+
+digits.forEach((d, i) => {
+  d.addEventListener("input", () => {
+    d.value = d.value.replace(/\D/g, "").slice(-1);
+    if (d.value && i < 3) digits[i + 1].focus();
+    btn.disabled = getPin().length < 4;
+  });
+  d.addEventListener("keydown", (e) => {
+    if (e.key === "Backspace" && !d.value && i > 0) {
+      digits[i - 1].focus();
+    }
+    if (e.key === "Enter") submit();
+  });
+});
+
+function getPin() {
+  return Array.from(digits).map(d => d.value).join("");
+}
+
+async function submit() {
+  const pin = getPin();
+  if (pin.length < 4) return;
+  try {
+    const resp = await fetch("/api/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      const dest = new URLSearchParams(location.search).get("r") || "/drive";
+      location.href = dest;
+    } else {
+      err.textContent = "PINが違います";
+      digits.forEach(d => d.value = "");
+      digits[0].focus();
+      btn.disabled = true;
+    }
+  } catch (e) {
+    err.textContent = "通信エラー";
+  }
+}
+
+btn.addEventListener("click", submit);
+</script>
+</body>
+</html>

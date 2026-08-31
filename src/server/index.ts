@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import fastifyCors from "@fastify/cors";
+import crypto from "crypto";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -12,6 +13,8 @@ import type { SessionSnapshot, Branch } from "../domain/types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3456;
+const PIN = process.env.PYP_PIN || "2080";
+const authedTokens = new Set<string>();
 
 let graph: RoadGraph;
 let simState: SimulatorState | null = null;
@@ -150,6 +153,41 @@ async function main() {
   await app.register(fastifyStatic, {
     root: join(__dirname, "../../public"),
     prefix: "/",
+  });
+
+  function isAuthed(req: import("fastify").FastifyRequest): boolean {
+    const cookie = req.headers.cookie || "";
+    const m = cookie.match(/pyp_token=([a-f0-9]+)/);
+    return m ? authedTokens.has(m[1]) : false;
+  }
+
+  app.post("/api/auth", async (request, reply) => {
+    const { pin } = request.body as { pin: string };
+    if (pin === PIN) {
+      const token = crypto.randomBytes(16).toString("hex");
+      authedTokens.add(token);
+      reply.header("Set-Cookie", `pyp_token=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`);
+      return { ok: true };
+    }
+    return reply.code(403).send({ ok: false });
+  });
+
+  app.addHook("onRequest", async (req, reply) => {
+    const url = req.url.split("?")[0];
+    if (url === "/api/auth" || url === "/pin" || url === "/pin.html") return;
+    if (url.match(/\.(css|js|ico|png|svg)$/)) return;
+    if (!isAuthed(req)) {
+      const dest = url === "/" ? "/drive" : url;
+      return reply.redirect(`/pin?r=${encodeURIComponent(dest)}`);
+    }
+  });
+
+  app.get("/pin", async (_req, reply) => {
+    return reply.sendFile("pin.html");
+  });
+
+  app.get("/", async (_req, reply) => {
+    return reply.redirect("/drive");
   });
 
   app.get("/drive", async (_req, reply) => {
