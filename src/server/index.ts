@@ -13,7 +13,7 @@ import type { SessionSnapshot, Branch } from "../domain/types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3456;
-const PIN = process.env.PYP_PIN || "2080";
+const PIN = process.env.PYP_PIN || "3042";
 const authedTokens = new Set<string>();
 
 let graph: RoadGraph;
