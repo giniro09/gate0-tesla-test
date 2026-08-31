@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>PYP Drive</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    font-family: -apple-system, "Hiragino Sans", "Meiryo", sans-serif;
+    background: #0f0f1a;
+    color: #eee;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+
+  /* ===== PIN screen ===== */
+  #pinScreen {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+  }
+  .pin-card {
+    background: #16213e; border-radius: 16px; padding: 48px 40px;
+    text-align: center; max-width: 360px; width: 90%;
+  }
+  .pin-card h1 { font-size: 22px; margin-bottom: 8px; }
+  .pin-sub { font-size: 14px; color: #666; margin-bottom: 32px; }
+  .pin-row { display: flex; gap: 12px; justify-content: center; margin-bottom: 24px; }
+  .pin-digit {
+    width: 56px; height: 64px; background: #0f0f1a; border: 2px solid #333;
+    border-radius: 10px; color: #00d4ff; font-size: 32px; font-weight: 800;
+    text-align: center; outline: none; caret-color: #00d4ff;
+  }
+  .pin-digit:focus { border-color: #00d4ff; }
+  .pin-error { color: #e74c3c; font-size: 14px; min-height: 20px; margin-bottom: 16px; }
+  .pin-btn {
+    background: #00d4ff; color: #0f0f1a; border: none; border-radius: 10px;
+    padding: 14px 48px; font-size: 18px; font-weight: 700; cursor: pointer;
+  }
+  .pin-btn:hover { background: #33dfff; }
+  .pin-btn:disabled { background: #333; color: #666; cursor: default; }
+
+  /* ===== Loading screen ===== */
+  #loadScreen {
+    flex: 1; display: none; align-items: center; justify-content: center;
+    flex-direction: column; gap: 16px;
+  }
+  .load-spinner {
+    width: 48px; height: 48px; border: 4px solid #333; border-top-color: #00d4ff;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .load-text { font-size: 18px; color: #888; }
+  #loadProgress { font-size: 14px; color: #555; }
+
+  /* ===== Drive UI ===== */
+  #driveScreen { display: none; flex-direction: column; height: 100vh; }
+
+  .header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 16px 24px; background: #16213e; flex-shrink: 0;
+  }
+  .distance-block { display: flex; align-items: baseline; gap: 6px; }
+  .distance {
+    font-size: 64px; font-weight: 900; color: #00d4ff; line-height: 1;
+    transition: color 0.3s; font-variant-numeric: tabular-nums;
+  }
+  .distance.near { color: #e74c3c; }
+  .distance-unit { font-size: 24px; color: #6ac5e0; }
+  .speed { font-size: 18px; color: #888; margin-left: 16px; }
+  .status { text-align: right; }
+  .status-text { font-size: 16px; color: #aaa; }
+  .status-badge {
+    display: inline-block; padding: 4px 12px; border-radius: 10px;
+    font-size: 13px; font-weight: 600; margin-top: 4px;
+  }
+  .badge-wait { background: #555; color: #fff; }
+  .badge-gps { background: #2980b9; color: #fff; }
+  .badge-ok { background: #27ae60; color: #fff; }
+  .badge-lost { background: #e74c3c; color: #fff; }
+
+  .junction-view {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    min-height: 0; position: relative;
+  }
+  .junction-svg { width: 100%; height: 100%; max-width: 600px; max-height: 600px; }
+
+  .notice {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 12px;
+  }
+  .notice-icon { font-size: 48px; opacity: 0.4; }
+  .notice-text { font-size: 24px; color: #555; }
+  .notice-sub { font-size: 14px; color: #444; }
+
+  .footer {
+    padding: 8px 24px; background: #16213e; border-top: 1px solid #333;
+    display: flex; justify-content: space-between;
+    font-size: 12px; color: #555; flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+
+<!-- ===== PIN Screen ===== -->
+<div id="pinScreen">
+  <div class="pin-card">
+    <h1>PYP Drive</h1>
+    <div class="pin-sub">PINを入力してください</div>
+    <div class="pin-row">
+      <input class="pin-digit" type="tel" maxlength="1" inputmode="numeric" autofocus>
+      <input class="pin-digit" type="tel" maxlength="1" inputmode="numeric">
+      <input class="pin-digit" type="tel" maxlength="1" inputmode="numeric">
+      <input class="pin-digit" type="tel" maxlength="1" inputmode="numeric">
+    </div>
+    <div id="pinError" class="pin-error"></div>
+    <button id="pinSubmit" class="pin-btn" disabled>入る</button>
+  </div>
+</div>
+
+<!-- ===== Loading Screen ===== -->
+<div id="loadScreen">
+  <div class="load-spinner"></div>
+  <div class="load-text">道路データを読み込み中...</div>
+  <div id="loadProgress"></div>
+</div>
+
+<!-- ===== Drive Screen ===== -->
+<div id="driveScreen">
+  <div class="header">
+    <div class="distance-block">
+      <span id="distance" class="distance">---</span>
+      <span class="distance-unit">m</span>
+      <span id="speed" class="speed"></span>
+    </div>
+    <div class="status">
+      <div id="stateLabel" class="status-text">GPS待機中</div>
+      <span id="badge" class="status-badge badge-wait">待機</span>
+    </div>
+  </div>
+
+  <div id="junctionArea" class="junction-view" style="display:none;">
+    <svg id="junctionSvg" class="junction-svg" viewBox="-200 -200 400 400"></svg>
+  </div>
+
+  <div id="noticeArea" class="notice">
+    <div class="notice-icon">📡</div>
+    <div id="noticeText" class="notice-text">GPS信号を待っています</div>
+    <div id="noticeSub" class="notice-sub">ブラウザの位置情報を許可してください</div>
+  </div>
+
+  <div class="footer">
+    <span id="gpsStatus">GPS: 待機中</span>
+    <span>Map data &copy; OpenStreetMap contributors</span>
+  </div>
+</div>
+
+<script>
+// ============================================================
+//  PIN Auth (client-side, hash-based)
+// ============================================================
+const PIN_HASH = "81d566fb189d531865580ffde45ceb613b07dcf1c7e45a68729ab7928a5af2b5";
+
+async function sha256(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+}
+
+const digits = document.querySelectorAll(".pin-digit");
+const pinSubmit = document.getElementById("pinSubmit");
+const pinError = document.getElementById("pinError");
+
+digits.forEach((d, i) => {
+  d.addEventListener("input", () => {
+    d.value = d.value.replace(/\D/g, "").slice(-1);
+    if (d.value && i < 3) digits[i + 1].focus();
+    pinSubmit.disabled = getPin().length < 4;
+  });
+  d.addEventListener("keydown", (e) => {
+    if (e.key === "Backspace" && !d.value && i > 0) digits[i - 1].focus();
+    if (e.key === "Enter") submitPin();
+  });
+});
+
+function getPin() { return Array.from(digits).map(d => d.value).join(""); }
+
+async function submitPin() {
+  const hash = await sha256(getPin());
+  if (hash === PIN_HASH) {
+    sessionStorage.setItem("pyp_auth", "1");
+    startApp();
+  } else {
+    pinError.textContent = "PINが違います";
+    digits.forEach(d => d.value = "");
+    digits[0].focus();
+    pinSubmit.disabled = true;
+  }
+}
+pinSubmit.addEventListener("click", submitPin);
+
+if (sessionStorage.getItem("pyp_auth") === "1") {
+  startApp();
+}
+
+// ============================================================
+//  Geo utilities
+// ============================================================
+const R_EARTH = 6371000;
+const DEG2RAD = Math.PI / 180;
+const RAD2DEG = 180 / Math.PI;
+
+function haversineM(lat1, lon1, lat2, lon2) {
+  const dLat = (lat2 - lat1) * DEG2RAD;
+  const dLon = (lon2 - lon1) * DEG2RAD;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*DEG2RAD)*Math.cos(lat2*DEG2RAD)*Math.sin(dLon/2)**2;
+  return R_EARTH * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function bearingDeg(lat1, lon1, lat2, lon2) {
+  const dLon = (lon2-lon1)*DEG2RAD;
+  const y = Math.sin(dLon)*Math.cos(lat2*DEG2RAD);
+  const x = Math.cos(lat1*DEG2RAD)*Math.sin(lat2*DEG2RAD) - Math.sin(lat1*DEG2RAD)*Math.cos(lat2*DEG2RAD)*Math.cos(dLon);
+  return ((Math.atan2(y,x)*RAD2DEG)+360)%360;
+}
+
+function normalize180(a) {
+  let r = ((a%360)+360)%360;
+  if (r>180) r -= 360;
+  return r;
+}
+
+function classifyTurn(a) {
+  const d = normalize180(a);
+  if (Math.abs(d)<=25) return "straight";
+  if (d<-135) return "sharp_left";
+  if (d<=-55) return "left";
+  if (d<-25) return "slight_left";
+  if (d>135) return "sharp_right";
+  if (d>=55) return "right";
+  if (d>25) return "slight_right";
+  return "straight";
+}
+
+// ============================================================
+//  OSM Graph Builder (browser version)
+// ============================================================
+const EXCLUDED_HW = new Set(["footway","path","cycleway","steps","pedestrian","bridleway","corridor","construction","proposed","raceway","bus_guideway"]);
+const EXCLUDED_SVC = new Set(["driveway","parking_aisle","emergency_access"]);
+
+function isCarAccessible(tags) {
+  const mc = tags.motorcar;
+  if (mc==="no"||mc==="private") return false;
+  if (mc==="yes"||mc==="designated") return true;
+  const mv = tags.motor_vehicle;
+  if (mv==="no"||mv==="private") return false;
+  const ac = tags.access;
+  if (ac==="no"||ac==="private"||ac==="agricultural"||ac==="forestry"||ac==="delivery"||ac==="customers"||ac==="destination") return false;
+  const hw = tags.highway||"";
+  if (EXCLUDED_HW.has(hw)||hw==="track") return false;
+  if (tags.service && EXCLUDED_SVC.has(tags.service)) return false;
+  return true;
+}
+
+function isOneway(tags) {
+  const ow = tags.oneway;
+  if (ow==="yes"||ow==="1"||ow==="true") return "yes";
+  if (ow==="-1"||ow==="reverse") return "reverse";
+  const jn = tags.junction;
+  if (jn==="roundabout"||jn==="circular") return "yes";
+  const hw = tags.highway;
+  if (hw==="motorway"||hw==="motorway_link") return "yes";
+  return "no";
+}
+
+function buildGraph(data) {
+  const osmNodes = new Map();
+  const ways = [];
+  for (const el of data.elements) {
+    if (el.type==="node" && el.lat!=null) osmNodes.set(el.id, {lat:el.lat,lon:el.lon,tags:el.tags||{}});
+    else if (el.type==="way" && el.tags?.highway) ways.push(el);
+  }
+
+  const nodes = new Map();
+  const edges = new Map();
+  const outgoing = new Map();
+  const incoming = new Map();
+
+  for (const way of ways) {
+    const tags = way.tags||{};
+    if (!isCarAccessible(tags)) continue;
+    const nids = way.nodes||[];
+    if (nids.length<2) continue;
+    const ow = isOneway(tags);
+
+    for (let i=0;i<nids.length-1;i++){
+      const f=osmNodes.get(nids[i]), t=osmNodes.get(nids[i+1]);
+      if (!f||!t) continue;
+      const fId="n_"+nids[i], tId="n_"+nids[i+1];
+
+      if (!nodes.has(fId)) nodes.set(fId,{id:fId,lat:f.lat,lon:f.lon});
+      if (!nodes.has(tId)) nodes.set(tId,{id:tId,lat:t.lat,lon:t.lon});
+
+      const len=haversineM(f.lat,f.lon,t.lat,t.lon);
+      const fwd=bearingDeg(f.lat,f.lon,t.lat,t.lon);
+      const rev=(fwd+180)%360;
+
+      if (ow!=="reverse"){
+        const eid=`e_${way.id}_${i}_${i+1}`;
+        edges.set(eid,{id:eid,osmWayId:String(way.id),fromNodeId:fId,toNodeId:tId,
+          geometry:[[f.lon,f.lat],[t.lon,t.lat]],lengthM:len,
+          startBearingDeg:fwd,endBearingDeg:fwd,
+          name:tags.name,ref:tags.ref,highway:tags.highway||"",oneway:ow==="yes"});
+        if(!outgoing.has(fId))outgoing.set(fId,[]);
+        outgoing.get(fId).push(eid);
+        if(!incoming.has(tId))incoming.set(tId,[]);
+        incoming.get(tId).push(eid);
+      }
+      if (ow!=="yes"){
+        const eid=`e_${way.id}_${i+1}_${i}_r`;
+        edges.set(eid,{id:eid,osmWayId:String(way.id),fromNodeId:tId,toNodeId:fId,
+          geometry:[[t.lon,t.lat],[f.lon,f.lat]],lengthM:len,
+          startBearingDeg:rev,endBearingDeg:rev,
+          name:tags.name,ref:tags.ref,highway:tags.highway||"",oneway:false});
+        if(!outgoing.has(tId))outgoing.set(tId,[]);
+        outgoing.get(tId).push(eid);
+        if(!incoming.has(fId))incoming.set(fId,[]);
+        incoming.get(fId).push(eid);
+      }
+    }
+  }
+  return {nodes,edges,outgoing,incoming};
+}
+
+// ============================================================
+//  Matcher (browser version)
+// ============================================================
+function perpendicularDistance(lat,lon,edge){
+  const [lon1,lat1]=edge.geometry[0];
+  const [lon2,lat2]=edge.geometry[edge.geometry.length-1];
+  const A=haversineM(lat1,lon1,lat,lon);
+  const B=haversineM(lat2,lon2,lat,lon);
+  const C=edge.lengthM;
+  if(C<0.1) return {distM:A,fraction:0};
+  let fraction=(A*A-B*B+C*C)/(2*C*C);
+  fraction=Math.max(0,Math.min(1,fraction));
+  const pLat=lat1+fraction*(lat2-lat1);
+  const pLon=lon1+fraction*(lon2-lon1);
+  return {distM:haversineM(lat,lon,pLat,pLon),fraction};
+}
+
+function matchPosition(graph,lat,lon,heading,speedMps,previousEdgeId){
+  const searchR=Math.min(70,Math.max(25,20+(speedMps||0)*0.8));
+  const candidates=[];
+
+  for(const edge of graph.edges.values()){
+    const mLat=(edge.geometry[0][1]+edge.geometry[edge.geometry.length-1][1])/2;
+    const mLon=(edge.geometry[0][0]+edge.geometry[edge.geometry.length-1][0])/2;
+    if(haversineM(lat,lon,mLat,mLon)>searchR+edge.lengthM/2+50) continue;
+
+    const {distM,fraction}=perpendicularDistance(lat,lon,edge);
+    if(distM>searchR) continue;
+
+    const distTerm=distM/searchR;
+    let headingTerm=0;
+    if(heading!=null){
+      const eb=edge.startBearingDeg+fraction*(edge.endBearingDeg-edge.startBearingDeg);
+      headingTerm=Math.min(Math.abs(normalize180(heading-eb))/90,1);
+    }
+    let contTerm=0.5;
+    if(previousEdgeId){
+      if(edge.id===previousEdgeId) contTerm=0;
+      else {
+        const prev=graph.edges.get(previousEdgeId);
+        if(prev&&(graph.outgoing.get(prev.toNodeId)||[]).includes(edge.id)) contTerm=0.1;
+      }
+    }
+    candidates.push({edge,distM,fraction,score:0.45*distTerm+0.25*headingTerm+0.20*contTerm});
+  }
+
+  if(!candidates.length) return null;
+  candidates.sort((a,b)=>a.score-b.score);
+  return {edge:candidates[0].edge, fraction:candidates[0].fraction};
+}
+
+function findNextDecision(graph,startEdge,startFraction){
+  let curId=startEdge.id;
+  let accM=startEdge.lengthM*(1-startFraction);
+  const visited=new Set([startEdge.id]);
+
+  for(let s=0;s<200;s++){
+    const edge=graph.edges.get(curId);
+    const nodeId=edge.toNodeId;
+    if(accM>2000) return null;
+
+    const outIds=(graph.outgoing.get(nodeId)||[]).filter(eid=>{
+      const e=graph.edges.get(eid);
+      return e.toNodeId!==edge.fromNodeId||e.osmWayId!==edge.osmWayId;
+    });
+
+    if(!outIds.length) return null;
+
+    if(outIds.length>=2){
+      const inBearing=edge.endBearingDeg;
+      const branches=outIds.map(eid=>{
+        const oe=graph.edges.get(eid);
+        const rel=normalize180(oe.startBearingDeg-inBearing);
+        return {id:"br_"+eid,label:classifyTurn(rel),angleDeg:rel,
+          roadName:oe.name,roadRef:oe.ref,selected:false};
+      }).sort((a,b)=>a.angleDeg-b.angleDeg);
+      const node=graph.nodes.get(nodeId);
+      return {nodeId,distanceM:accM,branches,lat:node?.lat,lon:node?.lon};
+    }
+
+    const nid=outIds[0];
+    if(visited.has(nid)) return null;
+    visited.add(nid);
+    accM+=graph.edges.get(nid).lengthM;
+    curId=nid;
+  }
+  return null;
+}
+
+// ============================================================
+//  App State
+// ============================================================
+let graph = null;
+let lastMatchEdgeId = null;
+let selectedBranchId = null;
+let lastDecisionNodeId = null;
+let lastSpeedMps = 0;
+let displayDistanceM = null;
+let gpsActive = false;
+let currentDecision = null;
+
+// ============================================================
+//  App startup
+// ============================================================
+async function startApp() {
+  document.getElementById("pinScreen").style.display = "none";
+  document.getElementById("loadScreen").style.display = "flex";
+
+  const prog = document.getElementById("loadProgress");
+  prog.textContent = "ダウンロード中...";
+
+  try {
+    const resp = await fetch("utsunomiya.osm.json");
+    const data = await resp.json();
+    prog.textContent = `${data.elements.length} 要素を処理中...`;
+    await new Promise(r => setTimeout(r, 50));
+
+    graph = buildGraph(data);
+    prog.textContent = `${graph.nodes.size} ノード, ${graph.edges.size} エッジ`;
+    await new Promise(r => setTimeout(r, 200));
+  } catch(e) {
+    prog.textContent = "読み込み失敗: " + e.message;
+    return;
+  }
+
+  document.getElementById("loadScreen").style.display = "none";
+  document.getElementById("driveScreen").style.display = "flex";
+  startGps();
+  requestAnimationFrame(interpolationLoop);
+}
+
+// ============================================================
+//  GPS
+// ============================================================
+function startGps() {
+  if (!navigator.geolocation) {
+    showNotice("GPS非対応", "このブラウザでは位置情報を取得できません");
+    return;
+  }
+
+  navigator.geolocation.watchPosition(
+    (pos) => {
+      const {latitude,longitude,heading,speed} = pos.coords;
+      gpsActive = true;
+      lastSpeedMps = speed || 0;
+
+      document.getElementById("gpsStatus").textContent =
+        `GPS: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+      setBadge("gps","GPS");
+
+      const kph = Math.round(lastSpeedMps*3.6);
+      document.getElementById("speed").textContent = kph>0 ? `${kph} km/h` : "";
+
+      processPosition(latitude, longitude, heading, speed);
+    },
+    (err) => {
+      document.getElementById("gpsStatus").textContent = `GPS: エラー (${err.message})`;
+      setBadge("lost","GPS不可");
+      showNotice("GPS取得失敗", err.message);
+    },
+    {enableHighAccuracy:true, maximumAge:2000, timeout:10000}
+  );
+}
+
+function processPosition(lat, lon, heading, speed) {
+  const match = matchPosition(graph, lat, lon, heading, speed||0, lastMatchEdgeId);
+  if (!match) {
+    currentDecision = null;
+    document.getElementById("stateLabel").textContent = "位置を確認中";
+    setBadge("lost","LOST");
+    showNotice("位置を確認中","道路にマッチできません");
+    return;
+  }
+
+  lastMatchEdgeId = match.edge.id;
+  const decision = findNextDecision(graph, match.edge, match.fraction);
+
+  if (decision && decision.distanceM <= 800) {
+    if (lastDecisionNodeId && lastDecisionNodeId !== decision.nodeId) {
+      selectedBranchId = null;
+    }
+    lastDecisionNodeId = decision.nodeId;
+
+    if (selectedBranchId && decision.branches.some(b => b.id === selectedBranchId)) {
+      decision.branches = decision.branches.map(b => ({
+        ...b, selected: b.id === selectedBranchId
+      }));
+    } else if (selectedBranchId) {
+      selectedBranchId = null;
+    }
+
+    currentDecision = decision;
+    displayDistanceM = Math.round(decision.distanceM);
+    updateDistanceDisplay(displayDistanceM);
+    document.getElementById("junctionArea").style.display = "flex";
+    document.getElementById("noticeArea").style.display = "none";
+    document.getElementById("stateLabel").textContent =
+      selectedBranchId ? "選択済み" : "方向を選んでください";
+    setBadge("ok","検出中");
+    drawJunction(decision);
+  } else {
+    currentDecision = null;
+    selectedBranchId = null;
+    displayDistanceM = null;
+    document.getElementById("distance").textContent = "---";
+    document.getElementById("distance").classList.remove("near");
+    document.getElementById("junctionArea").style.display = "none";
+    document.getElementById("noticeArea").style.display = "flex";
+    document.getElementById("noticeText").textContent = "次の分岐を探しています";
+    document.getElementById("noticeSub").textContent = "";
+    document.getElementById("stateLabel").textContent = "走行中";
+    setBadge("ok","走行中");
+  }
+}
+
+function chooseBranch(branchId) {
+  if (!currentDecision) return;
+  selectedBranchId = branchId;
+  currentDecision.branches = currentDecision.branches.map(b => ({
+    ...b, selected: b.id === branchId
+  }));
+  document.getElementById("stateLabel").textContent = "選択済み";
+  drawJunction(currentDecision);
+}
+
+// ============================================================
+//  Interpolation loop (60fps)
+// ============================================================
+let lastFrameTime = 0;
+function interpolationLoop(now) {
+  requestAnimationFrame(interpolationLoop);
+  if (!currentDecision || !gpsActive) return;
+  const dt = (now - lastFrameTime) / 1000;
+  lastFrameTime = now;
+  if (dt>0 && dt<0.5 && displayDistanceM!==null && lastSpeedMps>0.5) {
+    displayDistanceM = Math.max(0, displayDistanceM - lastSpeedMps*dt);
+    updateDistanceDisplay(Math.round(displayDistanceM));
+  }
+}
+
+// ============================================================
+//  UI helpers
+// ============================================================
+function updateDistanceDisplay(m) {
+  const el = document.getElementById("distance");
+  el.textContent = m;
+  el.classList.toggle("near", m<80);
+}
+
+function showNotice(text, sub) {
+  document.getElementById("junctionArea").style.display = "none";
+  document.getElementById("noticeArea").style.display = "flex";
+  document.getElementById("noticeText").textContent = text;
+  document.getElementById("noticeSub").textContent = sub||"";
+}
+
+function setBadge(type, text) {
+  const el = document.getElementById("badge");
+  el.textContent = text;
+  el.className = `status-badge badge-${type}`;
+}
+
+// ============================================================
+//  SVG Junction drawing
+// ============================================================
+const LABEL_JA = {
+  sharp_left:"鋭角左", left:"左折", slight_left:"左斜め",
+  straight:"直進",
+  slight_right:"右斜め", right:"右折", sharp_right:"鋭角右",
+};
+
+function drawJunction(decision) {
+  const svg = document.getElementById("junctionSvg");
+  const branches = decision.branches;
+
+  let html = `<defs>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>`;
+
+  html += `<circle cx="0" cy="0" r="185" fill="none" stroke="#1a1a2e" stroke-width="2"/>`;
+  html += `<circle cx="0" cy="0" r="14" fill="#1e2a45" stroke="#3a5070" stroke-width="2"/>`;
+  html += `<line x1="0" y1="185" x2="0" y2="14" stroke="#3a3a50" stroke-width="20" stroke-linecap="round"/>`;
+
+  const maxD = 500;
+  const ratio = Math.min((displayDistanceM||decision.distanceM)/maxD, 1);
+  const carY = 30 + ratio*140;
+  html += `<polygon points="0,${carY-14} -11,${carY+8} 11,${carY+8}"
+    fill="#00d4ff" stroke="#0a5e7a" stroke-width="1.5"/>`;
+
+  for (const b of branches) {
+    const rad = b.angleDeg*Math.PI/180;
+    const roadLen = 165;
+    const ex = Math.sin(rad)*roadLen;
+    const ey = -Math.cos(rad)*roadLen;
+    const sel = b.selected;
+    const rc = sel?"#00d4ff":"#666";
+    const rw = sel?24:18;
+    const tc = sel?"#00d4ff":"#ccc";
+    const gl = sel?' filter="url(#glow)"':"";
+
+    html += `<line x1="0" y1="0" x2="${ex}" y2="${ey}"
+      stroke="${rc}" stroke-width="${rw}" stroke-linecap="round"
+      opacity="${sel?1:0.5}" ${gl}
+      data-branch="${b.id}" class="br" style="cursor:pointer"/>`;
+
+    const aD=roadLen-8;
+    const tipX=Math.sin(rad)*(aD+16), tipY=-Math.cos(rad)*(aD+16);
+    const pR=rad+Math.PI/2;
+    const lX=Math.sin(rad)*aD+Math.sin(pR)*9, lY=-Math.cos(rad)*aD-Math.cos(pR)*9;
+    const rX=Math.sin(rad)*aD-Math.sin(pR)*9, rY=-Math.cos(rad)*aD+Math.cos(pR)*9;
+    html += `<polygon points="${tipX},${tipY} ${lX},${lY} ${rX},${rY}"
+      fill="${rc}" opacity="${sel?1:0.6}"
+      data-branch="${b.id}" class="br" style="cursor:pointer"/>`;
+
+    const labelD=125;
+    const lx=Math.sin(rad)*labelD, ly=-Math.cos(rad)*labelD;
+    const anchor=Math.abs(b.angleDeg)<30?"middle":b.angleDeg>0?"start":"end";
+    const tx=Math.abs(b.angleDeg)<30?0:b.angleDeg>0?18:-18;
+    const label=LABEL_JA[b.label]||b.label;
+    const road=b.roadName||b.roadRef||"";
+
+    html += `<text x="${lx+tx}" y="${ly-6}" text-anchor="${anchor}"
+      fill="${tc}" font-size="20" font-weight="800"
+      data-branch="${b.id}" class="br"
+      style="cursor:pointer;user-select:none;text-shadow:0 0 8px rgba(0,0,0,0.8)"
+      >${label}</text>`;
+
+    if(road){
+      html += `<text x="${lx+tx}" y="${ly+14}" text-anchor="${anchor}"
+        fill="${sel?'#6ac5e0':'#777'}" font-size="13"
+        data-branch="${b.id}" class="br"
+        style="cursor:pointer;user-select:none;text-shadow:0 0 6px rgba(0,0,0,0.8)"
+        >${road}</text>`;
+    }
+
+    if(sel){
+      html += `<circle cx="${lx+tx}" cy="${ly+28}" r="4" fill="#00d4ff" opacity="0.8"/>`;
+      html += `<text x="${lx+tx}" y="${ly+44}" text-anchor="${anchor}"
+        fill="#00d4ff" font-size="11" font-weight="600"
+        style="user-select:none">選択中</text>`;
+    }
+  }
+
+  svg.innerHTML = html;
+
+  svg.querySelectorAll(".br").forEach(el => {
+    el.addEventListener("click", () => {
+      const bid = el.getAttribute("data-branch");
+      if (bid) chooseBranch(bid);
+    });
+  });
+}
+</script>
+</body>
+</html>
