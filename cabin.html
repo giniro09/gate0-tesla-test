@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cabin Probe - Tesla Mic &amp; Camera Test</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #0a0a0a;
+  color: #e0e0e0;
+  padding: 20px;
+  min-height: 100vh;
+}
+h1 { font-size: 22px; margin-bottom: 12px; color: #fff; }
+h2 { font-size: 17px; margin-bottom: 10px; color: #aaa; }
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 12px;
+}
+.card {
+  background: #1a1a1a;
+  border-radius: 12px;
+  padding: 16px;
+}
+.wide { grid-column: 1 / -1; }
+.status { display: flex; align-items: center; gap: 10px; margin: 8px 0; font-size: 15px; }
+.dot { width: 14px; height: 14px; border-radius: 50%; background: #333; flex-shrink: 0; }
+.dot.ok { background: #4caf50; }
+.dot.ng { background: #f44336; }
+.dot.wait { background: #ff9800; }
+button {
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 16px 22px;
+  min-height: 60px;
+  font-size: 17px;
+  margin: 4px 4px 4px 0;
+}
+button:active { background: #1d4ed8; }
+button.sub { background: #333; }
+button.on { background: #b45309; }
+video {
+  width: 100%;
+  max-height: 320px;
+  background: #000;
+  border-radius: 8px;
+  object-fit: contain;
+}
+canvas { width: 100%; height: 180px; background: #000; border-radius: 8px; display: block; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 13px; }
+dt { color: #888; }
+dd { color: #ddd; font-family: monospace; word-break: break-all; }
+#log {
+  background: #111;
+  border-radius: 8px;
+  padding: 12px;
+  height: 260px;
+  overflow-y: auto;
+  font-size: 13px;
+  font-family: monospace;
+  color: #999;
+  margin-top: 8px;
+}
+.log-entry { margin: 2px 0; word-break: break-all; }
+.log-entry.error { color: #f44336; }
+.log-entry.success { color: #4caf50; }
+.log-entry.warn { color: #ff9800; }
+.note { font-size: 13px; color: #777; margin-top: 6px; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<h1>Cabin Probe: マイク・カメラ挙動テスト</h1>
+<p class="note">停車中にマイクとカメラを開始してから走り出すと、走行中・停車時に何が起きるかがログに残ります。ログはページを再読み込みしても消えません。</p>
+
+<div class="grid" style="margin-top:12px;">
+
+  <div class="card">
+    <h2>1. マイク / 音の可視化</h2>
+    <button id="btn-mic" onclick="startMic()">マイク開始</button>
+    <button class="sub" onclick="stopMic()">停止</button>
+    <div class="status"><span class="dot" id="mic-dot"></span><span id="mic-text">未開始</span></div>
+    <canvas id="viz"></canvas>
+    <div class="note">音量ピーク: <span id="mic-peak">-</span> dB / 最終受信: <span id="mic-last">-</span></div>
+  </div>
+
+  <div class="card">
+    <h2>2. キャビンカメラ</h2>
+    <button id="btn-cam" onclick="startCam()">カメラ開始</button>
+    <button class="sub" onclick="stopCam()">停止</button>
+    <button class="sub" id="btn-retry" onclick="toggleRetry()">自動再試行 OFF</button>
+    <div class="status"><span class="dot" id="cam-dot"></span><span id="cam-text">未開始</span></div>
+    <video id="video" autoplay playsinline muted></video>
+    <div class="note">フレーム: <span id="cam-fps">-</span> fps / 最終フレーム: <span id="cam-last">-</span></div>
+    <div class="note">自動再試行ONにすると、カメラが止まっている間10秒ごとに取得を試み、走行中のエラー内容と停車後に復活するかを記録します。</div>
+  </div>
+
+  <div class="card">
+    <h2>3. 速度（走行状態の目安）</h2>
+    <button class="sub" id="btn-gps" onclick="startGps()">GPS速度を記録</button>
+    <div class="status"><span class="dot" id="gps-dot"></span><span id="gps-text">未開始</span></div>
+    <div class="note">ブラウザからギア状態は取れないため、GPS速度をログに並べて走行中かどうかの目安にします。</div>
+  </div>
+
+  <div class="card">
+    <h2>4. 環境</h2>
+    <dl id="env"></dl>
+    <button class="sub" onclick="probeEnv()">再取得</button>
+  </div>
+
+  <div class="card wide">
+    <h2>ログ</h2>
+    <button class="sub" onclick="copyLog()">ログをコピー</button>
+    <button class="sub" onclick="clearLog()">ログを消去</button>
+    <div id="log"></div>
+  </div>
+
+</div>
+
+<script>
+// --- Logging (persisted across reloads) ---
+const LOG_KEY = 'cabinProbeLog';
+let logLines = [];
+try { logLines = JSON.parse(localStorage.getItem(LOG_KEY) || '[]'); } catch (e) {}
+
+function renderLogEntry(line) {
+  const el = document.getElementById('log');
+  const entry = document.createElement('div');
+  entry.className = 'log-entry' + (line.t ? ' ' + line.t : '');
+  entry.textContent = '[' + line.at + '] ' + line.m;
+  el.appendChild(entry);
+  el.scrollTop = el.scrollHeight;
+}
+
+function log(msg, type) {
+  const line = { at: new Date().toLocaleTimeString(), m: msg, t: type || '' };
+  logLines.push(line);
+  if (logLines.length > 500) logLines = logLines.slice(-500);
+  try { localStorage.setItem(LOG_KEY, JSON.stringify(logLines)); } catch (e) {}
+  renderLogEntry(line);
+}
+
+function copyLog() {
+  const text = logLines.map(l => '[' + l.at + '] ' + l.m).join('\n');
+  navigator.clipboard.writeText(text).then(
+    () => log('ログをクリップボードにコピーしました', 'success'),
+    err => log('コピー失敗: ' + err.message, 'error')
+  );
+}
+
+function clearLog() {
+  logLines = [];
+  try { localStorage.removeItem(LOG_KEY); } catch (e) {}
+  document.getElementById('log').innerHTML = '';
+}
+
+function setStatus(prefix, state, text) {
+  document.getElementById(prefix + '-dot').className = 'dot ' + state;
+  document.getElementById(prefix + '-text').textContent = text;
+}
+
+function errText(err) {
+  return (err && err.name ? err.name + ': ' : '') + (err && err.message ? err.message : String(err));
+}
+
+// Track lifecycle events are the main thing we want to observe while driving
+function watchTrack(track, label) {
+  const s = track.getSettings ? track.getSettings() : {};
+  log(label + ' track: "' + track.label + '" settings=' + JSON.stringify(s));
+  track.addEventListener('mute', () => log(label + ' track MUTE', 'warn'));
+  track.addEventListener('unmute', () => log(label + ' track UNMUTE', 'success'));
+  track.addEventListener('ended', () => {
+    log(label + ' track ENDED (readyState=' + track.readyState + ')', 'error');
+    if (label === 'カメラ') onCamEnded();
+    if (label === 'マイク') setStatus('mic', 'ng', '終了しました（ended）');
+  });
+}
+
+// --- 1. Microphone + visualizer ---
+let micStream = null;
+let audioCtx = null;
+let analyser = null;
+let lastLoudAt = 0;
+
+async function startMic() {
+  if (micStream) return;
+  setStatus('mic', 'wait', '許可を要求中...');
+  log('マイク getUserMedia 要求');
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    setStatus('mic', 'ok', '取得成功');
+    log('マイク取得成功', 'success');
+    watchTrack(micStream.getAudioTracks()[0], 'マイク');
+
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx.addEventListener('statechange', () => log('AudioContext state=' + audioCtx.state, 'warn'));
+    const source = audioCtx.createMediaStreamSource(micStream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    source.connect(analyser);
+    lastLoudAt = Date.now();
+    drawViz();
+  } catch (err) {
+    micStream = null;
+    setStatus('mic', 'ng', '失敗: ' + errText(err));
+    log('マイク失敗: ' + errText(err), 'error');
+  }
+}
+
+function stopMic() {
+  if (!micStream) return;
+  micStream.getTracks().forEach(t => t.stop());
+  micStream = null;
+  if (audioCtx) audioCtx.close();
+  audioCtx = null;
+  analyser = null;
+  setStatus('mic', '', '停止');
+  log('マイク停止（手動）');
+}
+
+function drawViz() {
+  const canvas = document.getElementById('viz');
+  const ctx = canvas.getContext('2d');
+  const freq = new Uint8Array(analyser.frequencyBinCount);
+  const wave = new Float32Array(analyser.fftSize);
+
+  function frame() {
+    if (!analyser) return;
+    const w = canvas.width = canvas.clientWidth * devicePixelRatio;
+    const h = canvas.height = canvas.clientHeight * devicePixelRatio;
+    analyser.getByteFrequencyData(freq);
+    analyser.getFloatTimeDomainData(wave);
+
+    let peak = 0;
+    for (let i = 0; i < wave.length; i++) peak = Math.max(peak, Math.abs(wave[i]));
+    const db = peak > 0 ? 20 * Math.log10(peak) : -Infinity;
+    document.getElementById('mic-peak').textContent = isFinite(db) ? db.toFixed(1) : '-∞';
+    // Silence for long stretches while the track is "live" suggests the car is muting input
+    if (db > -60) {
+      lastLoudAt = Date.now();
+      document.getElementById('mic-last').textContent = new Date().toLocaleTimeString();
+    }
+
+    ctx.clearRect(0, 0, w, h);
+    const bins = 96;
+    const step = Math.floor(freq.length / bins);
+    const bw = w / bins;
+    for (let i = 0; i < bins; i++) {
+      const v = freq[i * step] / 255;
+      ctx.fillStyle = 'hsl(' + (200 - v * 160) + ',80%,' + (35 + v * 25) + '%)';
+      ctx.fillRect(i * bw + 1, h - v * h, bw - 2, v * h);
+    }
+    requestAnimationFrame(frame);
+  }
+  frame();
+}
+
+// Report long silences once, so mid-drive muting shows up in the log
+let silenceReported = false;
+setInterval(() => {
+  if (!analyser) return;
+  const silentFor = (Date.now() - lastLoudAt) / 1000;
+  if (silentFor > 15 && !silenceReported) {
+    log('マイク入力が15秒以上ほぼ無音（-60dB未満）', 'warn');
+    silenceReported = true;
+  } else if (silentFor < 1 && silenceReported) {
+    log('マイク入力が復帰', 'success');
+    silenceReported = false;
+  }
+}, 1000);
+
+// --- 2. Camera ---
+let camStream = null;
+let retryOn = false;
+let frameCount = 0;
+let lastFrameAt = 0;
+let frozenReported = false;
+
+async function startCam() {
+  if (camStream) return;
+  setStatus('cam', 'wait', '許可を要求中...');
+  log('カメラ getUserMedia 要求');
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({ video: true });
+    const video = document.getElementById('video');
+    video.srcObject = camStream;
+    setStatus('cam', 'ok', '取得成功');
+    log('カメラ取得成功', 'success');
+    watchTrack(camStream.getVideoTracks()[0], 'カメラ');
+    video.addEventListener('loadedmetadata', () => log('映像サイズ ' + video.videoWidth + 'x' + video.videoHeight), { once: true });
+    countFrames(video);
+  } catch (err) {
+    camStream = null;
+    setStatus('cam', 'ng', '失敗: ' + errText(err));
+    log('カメラ失敗: ' + errText(err), 'error');
+  }
+}
+
+function stopCam() {
+  if (!camStream) return;
+  camStream.getTracks().forEach(t => t.stop());
+  camStream = null;
+  document.getElementById('video').srcObject = null;
+  setStatus('cam', '', '停止');
+  log('カメラ停止（手動）');
+}
+
+function onCamEnded() {
+  camStream = null;
+  setStatus('cam', 'ng', '終了しました（ended）');
+}
+
+function countFrames(video) {
+  const tick = () => {
+    if (!camStream) return;
+    frameCount++;
+    lastFrameAt = Date.now();
+    if (frozenReported) {
+      log('カメラ映像が再開', 'success');
+      frozenReported = false;
+    }
+    if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(tick);
+  };
+  if ('requestVideoFrameCallback' in video) {
+    video.requestVideoFrameCallback(tick);
+  } else {
+    log('requestVideoFrameCallback 非対応: フレーム監視なし', 'warn');
+  }
+}
+
+setInterval(() => {
+  document.getElementById('cam-fps').textContent = camStream ? frameCount : '-';
+  if (lastFrameAt) document.getElementById('cam-last').textContent = new Date(lastFrameAt).toLocaleTimeString();
+  frameCount = 0;
+  // A live track that stops delivering frames = camera blanked without ending the track
+  if (camStream && lastFrameAt && Date.now() - lastFrameAt > 3000 && !frozenReported) {
+    log('カメラ映像が3秒以上停止（trackは' + camStream.getVideoTracks()[0].readyState + '）', 'warn');
+    frozenReported = true;
+  }
+}, 1000);
+
+function toggleRetry() {
+  retryOn = !retryOn;
+  const btn = document.getElementById('btn-retry');
+  btn.textContent = '自動再試行 ' + (retryOn ? 'ON' : 'OFF');
+  btn.className = retryOn ? 'on' : 'sub';
+  log('カメラ自動再試行 ' + (retryOn ? 'ON' : 'OFF'));
+}
+
+setInterval(() => {
+  if (retryOn && !camStream) startCam();
+}, 10000);
+
+// --- 3. GPS speed ---
+let gpsWatch = null;
+let lastSpeedBucket = null;
+
+function startGps() {
+  if (gpsWatch !== null) return;
+  if (!navigator.geolocation) {
+    setStatus('gps', 'ng', 'Geolocation 非対応');
+    return;
+  }
+  setStatus('gps', 'wait', '許可を要求中...');
+  gpsWatch = navigator.geolocation.watchPosition(pos => {
+    const sp = pos.coords.speed;
+    const kmh = sp == null ? null : sp * 3.6;
+    setStatus('gps', 'ok', kmh == null ? '速度不明' : kmh.toFixed(0) + ' km/h');
+    // Log only when the car crosses between stopped / moving
+    const bucket = kmh == null ? 'unknown' : (kmh < 2 ? 'stopped' : 'moving');
+    if (bucket !== lastSpeedBucket) {
+      log('GPS: ' + (bucket === 'moving' ? '走行中' : bucket === 'stopped' ? '停止中' : '速度不明') +
+        (kmh == null ? '' : ' (' + kmh.toFixed(0) + ' km/h)'), 'warn');
+      lastSpeedBucket = bucket;
+    }
+  }, err => {
+    setStatus('gps', 'ng', '失敗: ' + err.message);
+    log('GPS失敗: ' + err.message, 'error');
+    gpsWatch = null;
+  }, { enableHighAccuracy: true });
+}
+
+// --- 4. Environment ---
+async function probeEnv() {
+  const env = {
+    'UserAgent': navigator.userAgent,
+    'viewport': innerWidth + ' x ' + innerHeight,
+    'visualViewport': window.visualViewport ? Math.round(visualViewport.width) + ' x ' + Math.round(visualViewport.height) + ' (scale ' + visualViewport.scale + ')' : '-',
+    'screen': screen.width + ' x ' + screen.height,
+    'devicePixelRatio': devicePixelRatio,
+    'touch points': navigator.maxTouchPoints,
+    'secure context': window.isSecureContext,
+    'FaceDetector': 'FaceDetector' in window ? 'あり' : 'なし',
+    'SpeechRecognition': (window.SpeechRecognition || window.webkitSpeechRecognition) ? 'あり' : 'なし'
+  };
+
+  for (const name of ['camera', 'microphone', 'geolocation']) {
+    try {
+      const st = await navigator.permissions.query({ name });
+      env['permission: ' + name] = st.state;
+      st.onchange = () => log('権限変更 ' + name + ' → ' + st.state, 'warn');
+    } catch (e) {
+      env['permission: ' + name] = '照会不可';
+    }
+  }
+
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    env['devices'] = devices.map(d => d.kind + ':' + (d.label || '(ラベルなし)')).join(' / ') || 'なし';
+  } catch (e) {
+    env['devices'] = '取得失敗: ' + errText(e);
+  }
+
+  const dl = document.getElementById('env');
+  dl.innerHTML = '';
+  for (const [k, v] of Object.entries(env)) {
+    const dt = document.createElement('dt');
+    dt.textContent = k;
+    const dd = document.createElement('dd');
+    dd.textContent = v;
+    dl.append(dt, dd);
+  }
+  log('環境: viewport ' + env.viewport + ', DPR ' + env.devicePixelRatio + ', camera=' + env['permission: camera'] + ', mic=' + env['permission: microphone']);
+}
+
+if (navigator.mediaDevices) {
+  navigator.mediaDevices.addEventListener('devicechange', () => {
+    log('devicechange イベント', 'warn');
+    probeEnv();
+  });
+}
+
+document.addEventListener('visibilitychange', () => {
+  log(document.hidden ? 'ページが背面へ' : 'ページが前面へ', document.hidden ? 'error' : 'success');
+});
+
+window.addEventListener('resize', () => log('resize ' + innerWidth + 'x' + innerHeight));
+
+// --- Boot ---
+logLines.forEach(renderLogEntry);
+log('---- ページ読み込み ----');
+probeEnv();
+</script>
+
+</body>
+</html>
