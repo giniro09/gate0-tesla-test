@@ -303,7 +303,10 @@ window.addEventListener('pointerup', () => { pointer.down = false; });
 window.addEventListener('pointercancel', () => { pointer.down = false; });
 
 // ---------- Game 1: こえでとべ！ (microphone) ----------
+// Voice volume sets the chick's height directly (silence = ground, loudest = sky),
+// so passing a gate means holding your voice at the right level, not timing bursts.
 function VoiceGame() {
+  const LIVES = 3;
   const g = {
     key: 'voice',
     again: () => VoiceGame(),
@@ -311,99 +314,131 @@ function VoiceGame() {
     waiting: true,
     over: false,
     useMic: false,
-    threshold: -45,
+    low: -45, high: -20,
     level: 0,
-    y: 0, vy: 0,
-    dist: 0, stars: 0,
+    y: 0, prevY: 0,
+    dist: 0, stars: 0, gates: 0,
+    lives: LIVES,
+    invuln: 0,
     speed: 0,
     walls: [], starsList: [],
     nextWall: 0,
+    lastCenter: 0.5,
     flap: 0
   };
 
+  const r = () => Math.min(W, H) * 0.035;
+  const top = () => H * 0.1;
+  const bottom = () => H - r() - 6;
+  const levelToY = (lv) => bottom() - lv * (bottom() - top());
+
+  function measure(ms) {
+    const samples = [];
+    const t0 = performance.now();
+    return new Promise((res) => {
+      const tick = () => {
+        samples.push(micDb());
+        if (performance.now() - t0 < ms) requestAnimationFrame(tick);
+        else res(samples.sort((a, b) => a - b));
+      };
+      tick();
+    });
+  }
+
   g.start = async () => {
-    g.y = H * 0.45;
-    g.nextWall = W * 0.5;
-    showOverlay('<h2>🐤 こえでとべ！</h2><p>声を出すと上昇、だまると落ちる。<br>雲にぶつからないように飛ぼう。</p><p>マイクを準備しています…</p>');
+    g.y = g.prevY = bottom();
+    g.nextWall = W * 0.7;
+    showOverlay('<h2>🐤 こえでとべ！</h2><p>声の大きさがそのまま高さになります。<br>大きい声ほど高く、だまると地面へ。</p><p>マイクを準備しています…</p>');
     try {
       await ensureMic();
       g.useMic = true;
       showOverlay('<h2>しずかに…</h2><p>まわりの音の大きさを測っています</p>');
-      const samples = [];
-      const t0 = performance.now();
-      await new Promise((res) => {
-        const tick = () => {
-          samples.push(micDb());
-          if (performance.now() - t0 < 1200) requestAnimationFrame(tick); else res();
-        };
-        tick();
-      });
-      samples.sort((a, b) => a - b);
-      const floor = samples[Math.floor(samples.length * 0.7)];
-      g.threshold = clamp(floor + 10, -60, -20);
+      const quiet = await measure(1200);
+      const floor = quiet[Math.floor(quiet.length * 0.7)];
+      showOverlay('<h2>「あーーー！」</h2><p>いちばん大きな声を3秒出してください</p>');
+      const loud = await measure(3000);
+      const peak = loud[Math.floor(loud.length * 0.8)];
+      // Low end sits just above cabin noise; high end a bit under the user's shout so the sky is reachable
+      g.low = floor + 6;
+      g.high = Math.max(g.low + 12, peak - 3);
     } catch (err) {
       g.useMic = false;
-      notice('マイクが使えないのでタッチ長押しで遊べます（' + errName(err) + '）', 6000);
+      notice('マイクが使えないので、指で上下になぞって遊べます（' + errName(err) + '）', 6000);
     }
+    const hint = g.useMic ? '声の大きさで高さを合わせてゲートをくぐろう' : '指を上下に動かして高さを合わせよう';
     let n = 3;
-    showOverlay(`<h2>${n}</h2><p>${g.useMic ? '「あー！」と声を出して上昇' : '画面を長押しで上昇'}</p>`);
+    showOverlay(`<h2>${n}</h2><p>${hint}</p>`);
     const iv = setInterval(() => {
       n--;
-      if (n > 0) showOverlay(`<h2>${n}</h2><p>${g.useMic ? '「あー！」と声を出して上昇' : '画面を長押しで上昇'}</p>`);
+      if (n > 0) showOverlay(`<h2>${n}</h2><p>${hint}</p>`);
       else { clearInterval(iv); hideOverlay(); g.paused = false; g.waiting = false; }
     }, 700);
   };
 
   g.update = (dt) => {
-    // Input: voice level above the measured floor, or touch hold
-    let lv = 0;
-    if (g.useMic) lv = clamp((micDb() - g.threshold) / 18, 0, 1);
-    if (pointer.down) lv = 1;
-    g.level += (lv - g.level) * Math.min(1, dt * 12);
+    let lv = g.level;
+    if (g.useMic) lv = clamp((micDb() - g.low) / (g.high - g.low), 0, 1);
+    // Touch: finger height is the target height (works alongside the mic)
+    if (pointer.down) lv = clamp((bottom() - pointer.y) / (bottom() - top()), 0, 1);
+    // Rise quickly, fall a little slower so short breaths don't drop you to the ground
+    const k = lv > g.level ? 10 : 4;
+    g.level += (lv - g.level) * Math.min(1, dt * k);
 
-    const grav = H * 1.2;
-    const thrust = H * 4.2 * g.level;
-    g.vy += (grav - thrust) * dt;
-    g.vy = clamp(g.vy, -H * 0.9, H * 0.9);
-    g.y += g.vy * dt;
-    // Sky and ground are soft limits; only clouds end the run
-    const lim = Math.min(W, H) * 0.035;
-    if (g.y > H - lim) { g.y = H - lim; g.vy = 0; }
-    if (g.y < lim) { g.y = lim; g.vy = 0; }
-    g.flap += dt * (4 + g.level * 20);
+    g.prevY = g.y;
+    g.y = levelToY(g.level);
+    g.flap += dt * (4 + g.level * 14);
+    g.invuln = Math.max(0, g.invuln - dt);
 
-    g.speed = W * (0.22 + Math.min(0.25, g.dist / 4000));
+    g.speed = W * (0.17 + Math.min(0.15, g.dist / 6000));
     g.dist += g.speed * dt / (W * 0.01);
 
-    // Cloud walls with a gap that narrows over time
+    // Gates: the opening narrows over time and moves gradually so it can be followed by voice
     g.nextWall -= g.speed * dt;
     if (g.nextWall <= 0) {
-      const gap = H * clamp(0.42 - g.dist / 6000, 0.27, 0.42);
-      const center = rand(H * 0.12 + gap / 2, H * 0.92 - gap / 2);
-      g.walls.push({ x: W + 60, w: 70, top: center - gap / 2, bot: center + gap / 2, passed: false });
-      if (Math.random() < 0.6) g.starsList.push({ x: W + 60 + 35, y: center, got: false });
-      g.nextWall = W * rand(0.42, 0.55);
+      const gapN = clamp(0.4 - g.gates * 0.006, 0.24, 0.4);
+      const maxStep = clamp(0.25 + g.gates * 0.01, 0.25, 0.5);
+      const center = clamp(g.lastCenter + rand(-maxStep, maxStep), 0.1 + gapN / 2, 0.95 - gapN / 2);
+      g.lastCenter = center;
+      const cy = levelToY(center);
+      const gap = gapN * (bottom() - top());
+      g.walls.push({ x: W + 60, w: 70, top: cy - gap / 2, bot: cy + gap / 2, center, passed: false, broken: false });
+      if (Math.random() < 0.6) g.starsList.push({ x: W + 95, y: cy, got: false });
+      g.nextWall = W * rand(0.55, 0.7);
     }
-    const bx = W * 0.22, r = Math.min(W, H) * 0.035;
+    const bx = W * 0.22, rr = r();
     for (const w of g.walls) w.x -= g.speed * dt;
     for (const s of g.starsList) s.x -= g.speed * dt;
     g.walls = g.walls.filter((w) => w.x + w.w > -20);
     g.starsList = g.starsList.filter((s) => s.x > -20 && !s.got);
 
     for (const s of g.starsList) {
-      if (Math.hypot(s.x - bx, s.y - g.y) < r * 2) { s.got = true; g.stars++; }
+      if (Math.hypot(s.x - bx, s.y - g.y) < rr * 2) { s.got = true; g.stars++; }
     }
-    let hit = false;
     for (const w of g.walls) {
-      if (bx + r > w.x && bx - r < w.x + w.w && (g.y - r < w.top || g.y + r > w.bot)) hit = true;
+      const inside = bx + rr > w.x && bx - rr < w.x + w.w;
+      if (inside && !w.broken && g.invuln <= 0 && (g.y - rr < w.top || g.y + rr > w.bot)) {
+        // A hit costs a life and breaks this gate so you aren't hit twice by it
+        w.broken = true;
+        g.lives--;
+        g.invuln = 1.5;
+        notice('いたっ！ のこり ' + g.lives, 1200);
+        if (g.lives <= 0) {
+          $('hud-right').textContent = '🤍'.repeat(LIVES) + '  ⭐ ' + g.stars;
+          g.finish();
+          return;
+        }
+      }
+      if (!w.passed && w.x + w.w < bx - rr) {
+        w.passed = true;
+        if (!w.broken) g.gates++;
+      }
     }
-    if (hit) g.finish();
 
     $('hud-left').textContent = '🐤 ' + g.score() + ' 点';
-    $('hud-right').textContent = '⭐ ' + g.stars;
+    $('hud-right').textContent = '❤️'.repeat(g.lives) + '🤍'.repeat(LIVES - g.lives) + '  ⭐ ' + g.stars;
   };
 
-  g.score = () => Math.floor(g.dist) + g.stars * 20;
+  g.score = () => Math.floor(g.dist) + g.gates * 10 + g.stars * 20;
 
   g.finish = () => {
     if (g.over) return;
@@ -413,46 +448,54 @@ function VoiceGame() {
   };
 
   g.draw = (t) => {
-    // Sky
     const sky = ctx.createLinearGradient(0, 0, 0, H);
     sky.addColorStop(0, '#1d3b6e');
     sky.addColorStop(1, '#5aa0d8');
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#3f7d4e';
+    ctx.fillRect(0, H - 6, W, 6);
 
-    // Clouds walls
     for (const w of g.walls) {
+      ctx.globalAlpha = w.broken ? 0.35 : 1;
       ctx.fillStyle = '#f4f7ff';
       roundRect(w.x, -20, w.w, w.top + 20, 22);
       roundRect(w.x, w.bot, w.w, H - w.bot + 20, 22);
-      ctx.fillStyle = '#d7e2f5';
-      ctx.fillRect(w.x + 8, w.top - 14, w.w - 16, 6);
-      ctx.fillRect(w.x + 8, w.bot + 8, w.w - 16, 6);
+      ctx.fillStyle = '#ffd43b';
+      ctx.fillRect(w.x - 6, w.top - 6, w.w + 12, 6);
+      ctx.fillRect(w.x - 6, w.bot, w.w + 12, 6);
+      ctx.globalAlpha = 1;
     }
-    // Stars
     for (const s of g.starsList) drawStar(s.x, s.y, 16, t);
 
-    // Chick
-    const bx = W * 0.22, r = Math.min(W, H) * 0.035;
-    ctx.save();
-    ctx.translate(bx, g.y);
-    ctx.rotate(clamp(g.vy / H, -0.5, 0.6));
-    ctx.fillStyle = '#ffd43b';
-    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#f5b800';
-    ctx.beginPath(); ctx.ellipse(-r * 0.2, r * 0.1, r * 0.55, r * 0.3 * (0.6 + Math.abs(Math.sin(g.flap))), 0, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#ff7b00';
-    ctx.beginPath(); ctx.moveTo(r * 0.85, -r * 0.1); ctx.lineTo(r * 1.4, r * 0.05); ctx.lineTo(r * 0.85, r * 0.25); ctx.fill();
-    ctx.fillStyle = '#111';
-    ctx.beginPath(); ctx.arc(r * 0.4, -r * 0.3, r * 0.13, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
+    // Chick (blinks while invulnerable)
+    const bx = W * 0.22, rr = r();
+    if (!(g.invuln > 0 && Math.floor(t / 100) % 2)) {
+      ctx.save();
+      ctx.translate(bx, g.y);
+      ctx.rotate(clamp((g.y - g.prevY) / (H * 0.02), -0.5, 0.5));
+      ctx.fillStyle = '#ffd43b';
+      ctx.beginPath(); ctx.arc(0, 0, rr, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#f5b800';
+      ctx.beginPath(); ctx.ellipse(-rr * 0.2, rr * 0.1, rr * 0.55, rr * 0.3 * (0.6 + Math.abs(Math.sin(g.flap))), 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ff7b00';
+      ctx.beginPath(); ctx.moveTo(rr * 0.85, -rr * 0.1); ctx.lineTo(rr * 1.4, rr * 0.05); ctx.lineTo(rr * 0.85, rr * 0.25); ctx.fill();
+      ctx.fillStyle = '#111';
+      ctx.beginPath(); ctx.arc(rr * 0.4, -rr * 0.3, rr * 0.13, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
 
-    // Voice meter
-    const mh = H * 0.5, mx = 18, my = H * 0.3;
+    // Voice meter on the same scale as the screen, with the next gate's opening marked
+    const mx = 16, mw = 22, mt = top() - rr, mb = bottom() + rr;
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
-    roundRect(mx, my, 18, mh, 9);
+    roundRect(mx, mt, mw, mb - mt, 11);
+    const next = g.walls.find((w) => !w.passed && !w.broken && w.x + w.w > bx - rr);
+    if (next) {
+      ctx.fillStyle = 'rgba(255,212,59,0.45)';
+      ctx.fillRect(mx - 4, next.top, mw + 8, next.bot - next.top);
+    }
     ctx.fillStyle = '#22c3a6';
-    roundRect(mx, my + mh * (1 - g.level), 18, mh * g.level, 9);
+    ctx.beginPath(); ctx.arc(mx + mw / 2, g.y, 9, 0, Math.PI * 2); ctx.fill();
   };
 
   return g;
